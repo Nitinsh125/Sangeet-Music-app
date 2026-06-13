@@ -35,6 +35,7 @@ class SynthEngine {
     val playbackProgressMs: StateFlow<Long> = _playbackProgressMs
 
     private var durationMs = 180000L
+    private var elapsedMs = 0L
 
     @Synchronized
     fun start(style: String, frequency: Float, duration: Long) {
@@ -43,6 +44,7 @@ class SynthEngine {
         baseFreq = frequency
         durationMs = duration
         isPlaying = true
+        elapsedMs = 0L
         _playbackProgressMs.value = 0L
 
         // Initialize Audio Track
@@ -91,6 +93,11 @@ class SynthEngine {
         userSpeedMultiplier = speed.coerceIn(0.5f, 2.0f)
     }
 
+    fun seekTo(progressMs: Long) {
+        elapsedMs = progressMs.coerceIn(0L, durationMs)
+        _playbackProgressMs.value = elapsedMs
+    }
+
     private suspend fun audioGeneratorLoop() {
         val bufferSize = 1024 // stereo buffer size (512 samples per channel)
         val shortBuffer = ShortArray(bufferSize)
@@ -102,9 +109,6 @@ class SynthEngine {
         var ticker = 0L
         val random = Random()
         
-        // Tracking playback time simulated
-        var elapsedMs = 0L
-
         while (isPlaying) {
             val track = audioTrack
             if (track == null || track.playState != AudioTrack.PLAYSTATE_PLAYING) {

@@ -7,12 +7,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -81,6 +84,10 @@ fun MusicPlayerScreen(
     viewModel: MusicViewModel = viewModel()
 ) {
     val allSongs by viewModel.allSongs.collectAsStateWithLifecycle()
+    val visibleSongs by viewModel.visibleSongs.collectAsStateWithLifecycle()
+    val ignoredFolders by viewModel.ignoredFolders.collectAsStateWithLifecycle()
+    val activeDelimiters by viewModel.activeDelimiters.collectAsStateWithLifecycle()
+    val isFetchingLyrics by viewModel.isFetchingLyrics.collectAsStateWithLifecycle()
     val favoriteSongs by viewModel.favoriteSongs.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val currentSong by viewModel.currentSong.collectAsStateWithLifecycle()
@@ -182,7 +189,7 @@ fun MusicPlayerScreen(
                         1 -> {
                             // --- SEARCH SECTION ---
                             SearchSection(
-                                allSongs = allSongs,
+                                allSongs = visibleSongs,
                                 searchQuery = searchQuery,
                                 onSearchQueryChange = { searchQuery = it },
                                 onSongClick = { viewModel.playSong(it) },
@@ -193,7 +200,7 @@ fun MusicPlayerScreen(
                         2 -> {
                             // --- LIBRARY SECTION (Image 2) ---
                             LibrarySection(
-                                allSongs = allSongs,
+                                allSongs = visibleSongs,
                                 playlists = playlists,
                                 currentSong = currentSong,
                                 activePlaylistId = activePlaylistId,
@@ -207,7 +214,11 @@ fun MusicPlayerScreen(
                                 onShuffleClick = {
                                     viewModel.toggleShuffle()
                                     viewModel.playNext()
-                                }
+                                },
+                                ignoredFolders = ignoredFolders,
+                                onToggleFolderFilter = { viewModel.toggleFolderFilter(it) },
+                                activeDelimiters = activeDelimiters,
+                                onToggleDelimiter = { viewModel.toggleDelimiter(it) }
                             )
                         }
                     }
@@ -253,7 +264,11 @@ fun MusicPlayerScreen(
                 onLoopToggle = { viewModel.toggleLoop() },
                 onFavoriteToggle = { currentSong?.let { viewModel.toggleFavorite(it) } },
                 onPitchChange = { viewModel.customizeSynth(it) },
-                onSpeedChange = { viewModel.setSpeed(it) }
+                onSpeedChange = { viewModel.setSpeed(it) },
+                onSeekClick = { viewModel.seekTo(it) },
+                onSaveLyrics = { id, text -> viewModel.saveLyrics(id, text) },
+                onSyncLyrics = { viewModel.syncLyricsFromLrclib(it) },
+                isFetchingLyrics = isFetchingLyrics
             )
         }
 
@@ -758,12 +773,26 @@ fun LibrarySection(
     selectedFilter: Int,
     onFilterSelected: (Int) -> Unit,
     onAddPlaylistClick: (Song) -> Unit,
-    onShuffleClick: () -> Unit
+    onShuffleClick: () -> Unit,
+    // Dynamic features states
+    ignoredFolders: Set<String>,
+    onToggleFolderFilter: (String) -> Unit,
+    activeDelimiters: List<String>,
+    onToggleDelimiter: (String) -> Unit
 ) {
+    var showScanFilterDialog by remember { mutableStateOf(false) }
+    var showDelimDialog by remember { mutableStateOf(false) }
+    
+    // Sub-view dialog state when selecting a specific group
+    var selectedGenreName by remember { mutableStateOf<String?>(null) }
+    var selectedFolderName by remember { mutableStateOf<String?>(null) }
+    var selectedArtistName by remember { mutableStateOf<String?>(null) }
+    var selectedAlbumName by remember { mutableStateOf<String?>(null) }
+
     Column(
         modifier = Modifier.fillMaxSize()
     ) {
-        // Upper Title block (Library + Settings Cog) in Image 2
+        // Upper Title block (Library + Configuration Cogs)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -777,34 +806,48 @@ fun LibrarySection(
                 fontWeight = FontWeight.Bold,
                 color = SangeetTextDark
             )
-            IconButton(
-                onClick = {},
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(Color(0xFFFAEBEF), CircleShape)
-            ) {
-                Icon(Icons.Default.Settings, contentDescription = "Config", tint = SangeetPrimary)
+            
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Toggler for smart delimiters
+                IconButton(
+                    onClick = { showDelimDialog = true },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(Color(0xFFFAEBEF), CircleShape)
+                ) {
+                    Icon(Icons.Default.ManageAccounts, contentDescription = "Artist Delim Config", tint = SangeetPrimary, modifier = Modifier.size(18.dp))
+                }
+                
+                // Toggler for foldered scan filtering
+                IconButton(
+                    onClick = { showScanFilterDialog = true },
+                    modifier = Modifier
+                        .size(40.dp)
+                        .background(Color(0xFFFAEBEF), CircleShape)
+                ) {
+                    Icon(Icons.Default.FolderSpecial, contentDescription = "Scanned Folders Config", tint = SangeetPrimary, modifier = Modifier.size(18.dp))
+                }
             }
         }
 
-        // Horizontal filter chips selection (SONGS | ALBUMS | ARTIST | PLAYLISTS)
+        // Horizontal scrollable filter chips selection (SONGS | ALBUMS | ARTIST | GENRES | FOLDERS | PLAYLISTS)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
+                .padding(horizontal = 20.dp, vertical = 8.dp)
+                .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            val filters = listOf("SONGS", "ALBUMS", "ARTIST", "PLAYLISTS")
+            val filters = listOf("SONGS", "ALBUMS", "ARTIST", "GENRES", "FOLDERS", "PLAYLISTS")
             filters.forEachIndexed { idx, label ->
                 val isActive = selectedFilter == idx
                 Box(
                     modifier = Modifier
-                        .weight(1f)
                         .clip(RoundedCornerShape(20.dp))
                         .background(if (isActive) SangeetPrimary else Color(0xFFFAEBEF))
                         .clickable { onFilterSelected(idx) }
-                        .padding(vertical = 10.dp),
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
@@ -818,7 +861,7 @@ fun LibrarySection(
             }
         }
 
-        // Secondary control Row (Shuffle button + Device & Sort Icons)
+        // Secondary control Row (Shuffle button + Status details)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -842,31 +885,19 @@ fun LibrarySection(
                 )
                 Spacer(modifier = Modifier.width(6.dp))
                 Text(
-                    text = "Shuffle",
+                    text = "Shuffle All",
                     color = SangeetPrimary,
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                IconButton(
-                    onClick = {},
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(Color(0xFFFAEBEF), CircleShape)
-                ) {
-                    Icon(Icons.Default.Smartphone, contentDescription = "Device", tint = SangeetPrimary, modifier = Modifier.size(18.dp))
-                }
-                IconButton(
-                    onClick = {},
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(Color(0xFFFAEBEF), CircleShape)
-                ) {
-                    Icon(Icons.Default.Sort, contentDescription = "Sort descending", tint = SangeetPrimary, modifier = Modifier.size(18.dp))
-                }
-            }
+            Text(
+                text = "${allSongs.size} Tracks Loaded",
+                fontSize = 12.sp,
+                color = SangeetTextMuted,
+                fontWeight = FontWeight.SemiBold
+            )
         }
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -880,82 +911,193 @@ fun LibrarySection(
         ) {
             when (selectedFilter) {
                 0 -> {
-                    // SONGS LIST VIEW
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        contentPadding = PaddingValues(bottom = 16.dp)
-                    ) {
-                        items(allSongs) { song ->
-                            val isCurrent = currentSong?.id == song.id
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(if (isCurrent) Color(0xFFFFF1F3) else Color.White.copy(alpha = 0.4f))
-                                    .border(1.dp, Color(0xFFFFF1F3), RoundedCornerShape(14.dp))
-                                    .clickable { onSongClick(song) }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                AsyncImage(
-                                    model = song.getCoverUrl(),
-                                    contentDescription = "cover",
+                    // SONGS LIST VIEW WITH AUDIO SPEC BADGES
+                    if (allSongs.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No tracks available inside active scanned folders.", color = SangeetTextMuted, fontSize = 13.sp, textAlign = TextAlign.Center)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp)
+                        ) {
+                            items(allSongs) { song ->
+                                val isCurrent = currentSong?.id == song.id
+                                Row(
                                     modifier = Modifier
-                                        .size(44.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        text = song.title,
-                                        color = if (isCurrent) SangeetPrimary else SangeetTextDark,
-                                        fontWeight = FontWeight.Bold,
-                                        fontSize = 15.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(14.dp))
+                                        .background(if (isCurrent) Color(0xFFFFF1F3) else Color.White.copy(alpha = 0.4f))
+                                        .border(1.dp, Color(0xFFFFF1F3), RoundedCornerShape(14.dp))
+                                        .clickable { onSongClick(song) }
+                                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    AsyncImage(
+                                        model = song.getCoverUrl(),
+                                        contentDescription = "cover",
+                                        modifier = Modifier
+                                            .size(46.dp)
+                                            .clip(RoundedCornerShape(8.dp))
                                     )
+                                    Spacer(modifier = Modifier.width(12.dp))
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                text = song.title,
+                                                color = if (isCurrent) SangeetPrimary else SangeetTextDark,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 15.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f, fill = false)
+                                            )
+                                            Spacer(modifier = Modifier.width(6.dp))
+                                            // Glowing audio format key badge (MP3, FLAC, WAV, AAC, OGG)
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(
+                                                        if (song.fileFormat == "FLAC" || song.fileFormat == "WAV") Color(0xFF432A3E)
+                                                        else SangeetPrimary.copy(alpha = 0.1f)
+                                                    )
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            ) {
+                                                Text(
+                                                    text = song.fileFormat,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = FontWeight.Black,
+                                                    color = if (song.fileFormat == "FLAC" || song.fileFormat == "WAV") Color(0xFFFFDADE) else SangeetPrimary
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "${song.artist} • ${song.sampleRate}",
+                                            color = SangeetTextMuted,
+                                            fontSize = 12.sp,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
+                                    }
                                     Text(
-                                        text = "${song.artist} • ${song.album}",
+                                        text = formatDuration(song.durationMs),
                                         color = SangeetTextMuted,
                                         fontSize = 12.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        modifier = Modifier.padding(horizontal = 8.dp)
                                     )
-                                }
-                                Text(
-                                    text = formatDuration(song.durationMs),
-                                    color = SangeetTextMuted,
-                                    fontSize = 12.sp,
-                                    modifier = Modifier.padding(horizontal = 8.dp)
-                                )
-                                IconButton(onClick = { onAddPlaylistClick(song) }) {
-                                    Icon(Icons.Default.Add, contentDescription = "Add track", tint = SangeetPrimary)
+                                    IconButton(onClick = { onAddPlaylistClick(song) }) {
+                                        Icon(Icons.Default.Add, contentDescription = "Add track", tint = SangeetPrimary)
+                                    }
                                 }
                             }
                         }
                     }
                 }
                 1 -> {
-                    // ALBUMS 2-COLUMN GRID VIEW (Image 2 style)
-                    // Group album covers or display song representations as Album cards
-                    // We render them dynamically in rows of 2 to guarantee maximum reliability in LazyColumn
-                    val chunkedSongs = allSongs.chunked(2)
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                        contentPadding = PaddingValues(bottom = 16.dp)
-                    ) {
-                        items(chunkedSongs) { pair ->
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                Box(modifier = Modifier.weight(1f)) {
-                                    AlbumGridCell(song = pair[0], onClick = { onSongClick(pair[0]) })
-                                }
-                                Box(modifier = Modifier.weight(1f)) {
+                    // ALBUMS COHESIVE GROUPING (Album Artist integration)
+                    val albumsMap = remember(allSongs) {
+                        allSongs.groupBy { it.album }
+                    }
+                    if (albumsMap.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No albums available.", color = SangeetTextMuted)
+                        }
+                    } else {
+                        val albumsList = albumsMap.toList()
+                        val chunkedAlbums = albumsList.chunked(2)
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp)
+                        ) {
+                            items(chunkedAlbums) { pair ->
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    // First Album
+                                    val (albumTitle1, songsInAlbum1) = pair[0]
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        Column(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(6.dp)
+                                                .clip(RoundedCornerShape(24.dp))
+                                                .background(Color(0xFFFAEBEF))
+                                                .clickable { selectedAlbumName = albumTitle1 }
+                                                .padding(10.dp),
+                                            horizontalAlignment = Alignment.CenterHorizontally
+                                        ) {
+                                            AsyncImage(
+                                                model = songsInAlbum1.first().getCoverUrl(),
+                                                contentDescription = albumTitle1,
+                                                modifier = Modifier
+                                                    .size(120.dp)
+                                                    .clip(RoundedCornerShape(16.dp))
+                                            )
+                                            Spacer(modifier = Modifier.height(10.dp))
+                                            Text(
+                                                text = albumTitle1,
+                                                fontWeight = FontWeight.Bold,
+                                                color = SangeetTextDark,
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            // Show smart album creator grouping
+                                            val creator = songsInAlbum1.first().albumArtist ?: songsInAlbum1.first().artist.split(";").first().trim()
+                                            Text(
+                                                text = "$creator\n${songsInAlbum1.size} Trails",
+                                                color = SangeetTextMuted,
+                                                fontSize = 11.sp,
+                                                textAlign = TextAlign.Center,
+                                                lineHeight = 14.sp,
+                                                maxLines = 2
+                                            )
+                                        }
+                                    }
+                                    
+                                    // Second Album
                                     if (pair.size > 1) {
-                                        AlbumGridCell(song = pair[1], onClick = { onSongClick(pair[1]) })
+                                        val (albumTitle2, songsInAlbum2) = pair[1]
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            Column(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(6.dp)
+                                                    .clip(RoundedCornerShape(24.dp))
+                                                    .background(Color(0xFFFAEBEF))
+                                                    .clickable { selectedAlbumName = albumTitle2 }
+                                                    .padding(10.dp),
+                                                horizontalAlignment = Alignment.CenterHorizontally
+                                            ) {
+                                                AsyncImage(
+                                                    model = songsInAlbum2.first().getCoverUrl(),
+                                                    contentDescription = albumTitle2,
+                                                    modifier = Modifier
+                                                        .size(120.dp)
+                                                        .clip(RoundedCornerShape(16.dp))
+                                                )
+                                                Spacer(modifier = Modifier.height(10.dp))
+                                                Text(
+                                                    text = albumTitle2,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = SangeetTextDark,
+                                                    fontSize = 14.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                val creator = songsInAlbum2.first().albumArtist ?: songsInAlbum2.first().artist.split(";").first().trim()
+                                                Text(
+                                                    text = "$creator\n${songsInAlbum2.size} Trails",
+                                                    color = SangeetTextMuted,
+                                                    fontSize = 11.sp,
+                                                    textAlign = TextAlign.Center,
+                                                    lineHeight = 14.sp,
+                                                    maxLines = 2
+                                                )
+                                            }
+                                        }
                                     } else {
-                                        Spacer(modifier = Modifier.fillMaxWidth())
+                                        Spacer(modifier = Modifier.weight(1f))
                                     }
                                 }
                             }
@@ -963,23 +1105,136 @@ fun LibrarySection(
                     }
                 }
                 2 -> {
-                    // ARTIST 2-COLUMN VIEW (Image 1 style)
-                    val chunkedArtists = allSongs.chunked(2)
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                        contentPadding = PaddingValues(bottom = 16.dp)
-                    ) {
-                        items(chunkedArtists) { pair ->
-                            Row(modifier = Modifier.fillMaxWidth()) {
-                                Box(modifier = Modifier.weight(1f)) {
-                                    ArtistGridCell(song = pair[0], onClick = { onSongClick(pair[0]) })
-                                }
-                                Box(modifier = Modifier.weight(1f)) {
-                                    if (pair.size > 1) {
-                                        ArtistGridCell(song = pair[1], onClick = { onSongClick(pair[1]) })
+                    // ARTIST MULTI-ARTIST SMART PARSING VIEW
+                    val parsedArtistsMap = remember(allSongs, activeDelimiters) {
+                        val map = mutableMapOf<String, MutableList<Song>>()
+                        for (song in allSongs) {
+                            var splitList = listOf(song.artist)
+                            for (delim in activeDelimiters) {
+                                splitList = splitList.flatMap { textSegment ->
+                                    if (textSegment.contains(delim)) {
+                                        textSegment.split(delim)
                                     } else {
-                                        Spacer(modifier = Modifier.fillMaxWidth())
+                                        listOf(textSegment)
+                                    }
+                                }
+                            }
+                            for (art in splitList) {
+                                val cleanArt = art.trim()
+                                if (cleanArt.isNotEmpty()) {
+                                    map.getOrPut(cleanArt) { mutableListOf() }.add(song)
+                                }
+                            }
+                        }
+                        map.toList().sortedBy { it.first }
+                    }
+
+                    if (parsedArtistsMap.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No artists parsed.", color = SangeetTextMuted)
+                        }
+                    } else {
+                        val chunkedArtists = parsedArtistsMap.chunked(2)
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp)
+                        ) {
+                            items(chunkedArtists) { pair ->
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    // First Artist
+                                    val (artistName1, songsIn1) = pair[0]
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(6.dp)
+                                            .clickable { selectedArtistName = artistName1 },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                            // Avatar Circle with Initials
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(100.dp)
+                                                    .clip(CircleShape)
+                                                    .background(
+                                                        Brush.linearGradient(
+                                                            colors = listOf(SangeetPrimary, Color(0xFFFFDADE))
+                                                        )
+                                                    ),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = artistName1.take(1).uppercase(),
+                                                    color = Color.White,
+                                                    fontSize = 32.sp,
+                                                    fontWeight = FontWeight.Black
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Text(
+                                                text = artistName1,
+                                                color = SangeetTextDark,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 14.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
+                                            )
+                                            Text(
+                                                text = "${songsIn1.size} Collaborations",
+                                                color = SangeetTextMuted,
+                                                fontSize = 11.sp
+                                            )
+                                        }
+                                    }
+
+                                    // Second Artist
+                                    if (pair.size > 1) {
+                                        val (artistName2, songsIn2) = pair[1]
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(6.dp)
+                                                .clickable { selectedArtistName = artistName2 },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                                Box(
+                                                    modifier = Modifier
+                                                        .size(100.dp)
+                                                        .clip(CircleShape)
+                                                        .background(
+                                                            Brush.linearGradient(
+                                                                colors = listOf(SangeetPrimary, Color(0xFFFFDADE))
+                                                            )
+                                                        ),
+                                                    contentAlignment = Alignment.Center
+                                                ) {
+                                                    Text(
+                                                        text = artistName2.take(1).uppercase(),
+                                                        color = Color.White,
+                                                        fontSize = 32.sp,
+                                                        fontWeight = FontWeight.Black
+                                                    )
+                                                }
+                                                Spacer(modifier = Modifier.height(8.dp))
+                                                Text(
+                                                    text = artistName2,
+                                                    color = SangeetTextDark,
+                                                    fontWeight = FontWeight.Bold,
+                                                    fontSize = 14.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                                Text(
+                                                    text = "${songsIn2.size} Collaborations",
+                                                    color = SangeetTextMuted,
+                                                    fontSize = 11.sp
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Spacer(modifier = Modifier.weight(1f))
                                     }
                                 }
                             }
@@ -987,6 +1242,144 @@ fun LibrarySection(
                     }
                 }
                 3 -> {
+                    // GENRES Filter
+                    val genreGroups = remember(allSongs) {
+                        allSongs.groupBy { it.genre }
+                    }
+                    if (genreGroups.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No genres available.", color = SangeetTextMuted)
+                        }
+                    } else {
+                        val genreList = genreGroups.toList()
+                        val chunkedGenres = genreList.chunked(2)
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp)
+                        ) {
+                            items(chunkedGenres) { pair ->
+                                Row(modifier = Modifier.fillMaxWidth()) {
+                                    val (genre1, songs1) = pair[0]
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .padding(6.dp)
+                                            .clip(RoundedCornerShape(20.dp))
+                                            .background(
+                                                Brush.linearGradient(
+                                                    colors = listOf(Color(0xFFFAEBEF), Color(0xFFFFF5F7))
+                                                )
+                                            )
+                                            .clickable { selectedGenreName = genre1 }
+                                            .padding(16.dp)
+                                    ) {
+                                        Column {
+                                            Icon(Icons.Default.MusicNote, contentDescription = "Genre", tint = SangeetPrimary, modifier = Modifier.size(24.dp))
+                                            Spacer(modifier = Modifier.height(14.dp))
+                                            Text(text = genre1, fontWeight = FontWeight.Bold, color = SangeetTextDark, fontSize = 15.sp)
+                                            Text(text = "${songs1.size} Songs", color = SangeetTextMuted, fontSize = 12.sp)
+                                        }
+                                    }
+
+                                    if (pair.size > 1) {
+                                        val (genre2, songs2) = pair[1]
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .padding(6.dp)
+                                                .clip(RoundedCornerShape(20.dp))
+                                                .background(
+                                                    Brush.linearGradient(
+                                                        colors = listOf(Color(0xFFFAEBEF), Color(0xFFFFF5F7))
+                                                    )
+                                                )
+                                                .clickable { selectedGenreName = genre2 }
+                                                .padding(16.dp)
+                                        ) {
+                                            Column {
+                                                Icon(Icons.Default.MusicNote, contentDescription = "Genre", tint = SangeetPrimary, modifier = Modifier.size(24.dp))
+                                                Spacer(modifier = Modifier.height(14.dp))
+                                                Text(text = genre2, fontWeight = FontWeight.Bold, color = SangeetTextDark, fontSize = 15.sp)
+                                                Text(text = "${songs2.size} Songs", color = SangeetTextMuted, fontSize = 12.sp)
+                                            }
+                                        }
+                                    } else {
+                                        Spacer(modifier = Modifier.weight(1f))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                4 -> {
+                    // FOLDERS Filter (Physical directory grouping)
+                    val folderGroups = remember(allSongs) {
+                        allSongs.groupBy { song ->
+                            song.filePath.substringBeforeLast("/")
+                        }
+                    }
+                    if (folderGroups.isEmpty()) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Text("No active directories. Enable directories in the gear icon above.", color = SangeetTextMuted, textAlign = TextAlign.Center)
+                        }
+                    } else {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            contentPadding = PaddingValues(bottom = 16.dp)
+                        ) {
+                            folderGroups.forEach { (dirPath, songsInDir) ->
+                                item {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(16.dp))
+                                            .background(Color(0xFFFAEBEF))
+                                            .clickable { selectedFolderName = dirPath }
+                                            .padding(16.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                                            Icon(Icons.Default.Folder, contentDescription = "folder", tint = SangeetPrimary, modifier = Modifier.size(32.dp))
+                                            Spacer(modifier = Modifier.width(14.dp))
+                                            Column {
+                                                Text(
+                                                    text = dirPath.substringAfterLast("/"),
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = SangeetTextDark,
+                                                    fontSize = 15.sp
+                                                )
+                                                Text(
+                                                    text = dirPath,
+                                                    color = SangeetTextMuted,
+                                                    fontSize = 11.sp,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(10.dp))
+                                                .background(SangeetPrimary.copy(alpha = 0.15f))
+                                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = "${songsInDir.size} loaded",
+                                                color = SangeetPrimary,
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                5 -> {
                     // PLAYLISTS VIEW WITH CUSTOM ADD PORTAL
                     Column(modifier = Modifier.fillMaxSize()) {
                         Row(
@@ -1105,6 +1498,267 @@ fun LibrarySection(
                 }
             }
         }
+    }
+
+    // LISTINGS POPUP FOR GENRES SELECTOR
+    selectedGenreName?.let { genreTitle ->
+        val genreSongs = allSongs.filter { it.genre == genreTitle }
+        AlertDialog(
+            onDismissRequest = { selectedGenreName = null },
+            title = { Text(text = "$genreTitle Genre Tracks", fontWeight = FontWeight.Bold, color = SangeetTextDark) },
+            text = {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.heightIn(max = 350.dp)
+                ) {
+                    items(genreSongs) { song ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    onSongClick(song)
+                                    selectedGenreName = null
+                                }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.PlayArrow, contentDescription = "Play", tint = SangeetPrimary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(text = song.title, fontWeight = FontWeight.Bold, color = SangeetTextDark, fontSize = 14.sp)
+                                Text(text = song.artist, color = SangeetTextMuted, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { selectedGenreName = null }, colors = ButtonDefaults.buttonColors(containerColor = SangeetPrimary)) {
+                    Text("Close", color = Color.White)
+                }
+            }
+        )
+    }
+
+    // LISTINGS POPUP FOR FOLDERS SELECTOR
+    selectedFolderName?.let { folderPath ->
+        val folderSongs = allSongs.filter { it.filePath.substringBeforeLast("/") == folderPath }
+        AlertDialog(
+            onDismissRequest = { selectedFolderName = null },
+            title = { Text(text = folderPath.substringAfterLast("/"), fontWeight = FontWeight.Bold, color = SangeetTextDark) },
+            text = {
+                Column {
+                    Text(text = "Directory: $folderPath", fontSize = 11.sp, color = SangeetTextMuted)
+                    Spacer(modifier = Modifier.height(10.dp))
+                    LazyColumn(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.heightIn(max = 350.dp)
+                    ) {
+                        items(folderSongs) { song ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .clickable {
+                                        onSongClick(song)
+                                        selectedFolderName = null
+                                    }
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.PlayCircle, contentDescription = "Play", tint = SangeetPrimary)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text(text = song.title, fontWeight = FontWeight.Bold, color = SangeetTextDark, fontSize = 14.sp)
+                                    Text(text = song.filePath.substringAfterLast("/"), color = SangeetTextMuted, fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { selectedFolderName = null }, colors = ButtonDefaults.buttonColors(containerColor = SangeetPrimary)) {
+                    Text("Close", color = Color.White)
+                }
+            }
+        )
+    }
+
+    // LISTINGS POPUP FOR MULTI-ARTIST COLLABORATORS
+    selectedArtistName?.let { artName ->
+        val artistSongs = allSongs.filter { song ->
+            var list = listOf(song.artist)
+            for (delim in activeDelimiters) {
+                list = list.flatMap { part -> if (part.contains(delim)) part.split(delim) else listOf(part) }
+            }
+            list.map { it.trim().lowercase() }.contains(artName.lowercase())
+        }
+        AlertDialog(
+            onDismissRequest = { selectedArtistName = null },
+            title = { Text(text = "Tracks for $artName", fontWeight = FontWeight.Bold, color = SangeetTextDark) },
+            text = {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.heightIn(max = 350.dp)
+                ) {
+                    items(artistSongs) { song ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    onSongClick(song)
+                                    selectedArtistName = null
+                                }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.PlayCircleFilled, contentDescription = "Play", tint = SangeetPrimary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(text = song.title, fontWeight = FontWeight.Bold, color = SangeetTextDark, fontSize = 14.sp)
+                                Text(text = "${song.artist} • ${song.album}", color = SangeetTextMuted, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { selectedArtistName = null }, colors = ButtonDefaults.buttonColors(containerColor = SangeetPrimary)) {
+                    Text("Close", color = Color.White)
+                }
+            }
+        )
+    }
+
+    // LISTINGS POPUP FOR ALBUMS
+    selectedAlbumName?.let { albName ->
+        val albumSongs = allSongs.filter { it.album == albName }
+        AlertDialog(
+            onDismissRequest = { selectedAlbumName = null },
+            title = { Text(text = albName, fontWeight = FontWeight.Bold, color = SangeetTextDark) },
+            text = {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.heightIn(max = 350.dp)
+                ) {
+                    items(albumSongs) { song ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    onSongClick(song)
+                                    selectedAlbumName = null
+                                }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.PlayCircle, contentDescription = "Play", tint = SangeetPrimary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column {
+                                Text(text = song.title, fontWeight = FontWeight.Bold, color = SangeetTextDark, fontSize = 14.sp)
+                                Text(text = if (song.albumArtist != null) "Album Artist: ${song.albumArtist}" else "Artist: ${song.artist}", color = SangeetTextMuted, fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { selectedAlbumName = null }, colors = ButtonDefaults.buttonColors(containerColor = SangeetPrimary)) {
+                    Text("Close", color = Color.White)
+                }
+            }
+        )
+    }
+
+    // SWITCH DIRECTORIES SCAN CONFIGURATION DIALOG
+    if (showScanFilterDialog) {
+        val staticFolders = listOf(
+            "/storage/emulated/0/Music/Ambient",
+            "/storage/emulated/0/Music/Retro",
+            "/storage/emulated/0/Downloads"
+        )
+        AlertDialog(
+            onDismissRequest = { showScanFilterDialog = false },
+            title = { Text(text = "Choose Scan Directories", fontWeight = FontWeight.Bold, color = SangeetTextDark) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Sangeet only imports audio tracks located in enabled directories.", fontSize = 12.sp, color = SangeetTextMuted)
+                    staticFolders.forEach { folder ->
+                        val isScanned = folder !in ignoredFolders
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onToggleFolderFilter(folder) }
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Folder, contentDescription = "folder", tint = SangeetPrimary, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(text = folder.substringAfterLast("/"), fontWeight = FontWeight.Bold, color = SangeetTextDark, fontSize = 14.sp)
+                                    Text(text = folder, color = SangeetTextMuted, fontSize = 11.sp)
+                                }
+                            }
+                            Switch(
+                                checked = isScanned,
+                                onCheckedChange = { onToggleFolderFilter(folder) },
+                                colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = SangeetPrimary)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showScanFilterDialog = false }, colors = ButtonDefaults.buttonColors(containerColor = SangeetPrimary)) {
+                    Text("Apply & Scan", color = Color.White)
+                }
+            }
+        )
+    }
+
+    // DELIMITERS CONFIGURATION DIALOG
+    if (showDelimDialog) {
+        val delimiters = listOf(";", "&", "feat.", ",")
+        AlertDialog(
+            onDismissRequest = { showDelimDialog = false },
+            title = { Text(text = "Smart Artist Splitters", fontWeight = FontWeight.Bold, color = SangeetTextDark) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("Configure which tokens split multi-artist tracks into isolated artist cards dynamically.", fontSize = 12.sp, color = SangeetTextMuted)
+                    delimiters.forEach { delim ->
+                        val isEnabled = delim in activeDelimiters
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { onToggleDelimiter(delim) }
+                                .padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(text = "' $delim '", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = SangeetTextDark)
+                            Checkbox(
+                                checked = isEnabled,
+                                onCheckedChange = { onToggleDelimiter(delim) },
+                                colors = CheckboxDefaults.colors(checkedColor = SangeetPrimary)
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showDelimDialog = false }, colors = ButtonDefaults.buttonColors(containerColor = SangeetPrimary)) {
+                    Text("Save", color = Color.White)
+                }
+            }
+        )
     }
 }
 
@@ -1322,9 +1976,17 @@ fun NowPlayingSheet(
     onLoopToggle: () -> Unit,
     onFavoriteToggle: () -> Unit,
     onPitchChange: (Float) -> Unit,
-    onSpeedChange: (Float) -> Unit
+    onSpeedChange: (Float) -> Unit,
+    onSeekClick: (Long) -> Unit,
+    onSaveLyrics: (String, String) -> Unit,
+    onSyncLyrics: (Song) -> Unit,
+    isFetchingLyrics: Boolean
 ) {
     if (currentSong == null) return
+
+    var showLyrics by remember { mutableStateOf(false) }
+    var showLyricsEditor by remember { mutableStateOf(false) }
+    var lyricsEditValue by remember(currentSong.lyricsLrc) { mutableStateOf(currentSong.lyricsLrc ?: "") }
 
     Box(
         modifier = Modifier
@@ -1332,10 +1994,11 @@ fun NowPlayingSheet(
             .background(Color(0xFF1E1518).copy(alpha = 0.96f)) // Ambient dark player screen
             .clickable(enabled = false) {}
     ) {
+        val sheetScrollState = rememberScrollState()
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(sheetScrollState, enabled = !showLyrics)
                 .padding(horizontal = 24.dp)
                 .statusBarsPadding()
                 .navigationBarsPadding(),
@@ -1353,13 +2016,38 @@ fun NowPlayingSheet(
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Close player", tint = Color.White, modifier = Modifier.size(28.dp))
                 }
-                Text(
-                    text = "Sangeet Player",
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    letterSpacing = 1.sp
-                )
+                
+                // Double Pill Tab Selector
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Color.White.copy(alpha = 0.08f))
+                        .padding(horizontal = 4.dp, vertical = 2.dp)
+                ) {
+                    Text(
+                        text = "PLAYER",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (!showLyrics) Color(0xFFFFDADE) else Color.White.copy(alpha = 0.5f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (!showLyrics) Color.White.copy(alpha = 0.12f) else Color.Transparent)
+                            .clickable { showLyrics = false }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                    Text(
+                        text = "LYRICS",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (showLyrics) Color(0xFFFFDADE) else Color.White.copy(alpha = 0.5f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (showLyrics) Color.White.copy(alpha = 0.12f) else Color.Transparent)
+                            .clickable { showLyrics = true }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+
                 IconButton(onClick = onFavoriteToggle) {
                     Icon(
                         imageVector = if (currentSong.isFavorite) Icons.Default.Favorite else Icons.Default.FavoriteBorder,
@@ -1372,108 +2060,233 @@ fun NowPlayingSheet(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // 1. Rotating Vinyl container
-            Box(
-                modifier = Modifier
-                    .size(230.dp)
-                    .clip(RoundedCornerShape(32.dp))
-                    .background(
-                        Brush.linearGradient(
-                            colors = listOf(Color(0xFF813D53), Color(0xFFFFDADE), Color(0xFFD0BCFF))
-                        )
-                    )
-                    .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(32.dp))
-                    .padding(14.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Box(
+            if (showLyrics) {
+                // HIGH ACCURACY SCROLLING LYRICS AND NETWORK SYNC COLUMN
+                Column(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(22.dp))
-                        .background(Color.Black.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
+                        .fillMaxWidth()
+                        .height(290.dp)
+                        .padding(horizontal = 12.dp)
                 ) {
-                    // rotating vinyl
-                    val currentRotation = if (isPlaying) rotationAngle else 0f
-                    Box(
+                    Row(
                         modifier = Modifier
-                            .size(175.dp)
-                            .rotate(currentRotation),
-                        contentAlignment = Alignment.Center
+                            .fillMaxWidth()
+                            .padding(bottom = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Canvas(modifier = Modifier.fillMaxSize()) {
-                            val center = Offset(size.width / 2, size.height / 2)
-                            val radius = size.minDimension / 2
-                            // vinyl black records
-                            drawCircle(color = Color(0xFF141416), radius = radius)
-                            // grooves
-                            for (r in 3..14) {
-                                drawCircle(
-                                    color = Color.White.copy(alpha = 0.04f),
-                                    radius = radius * (r / 15f),
-                                    style = Stroke(width = 1f)
-                                )
-                            }
-                            // label
-                            drawCircle(color = Color(0xFF813D53), radius = radius * 0.4f)
-                        }
-
-                        // central gradient label cover
-                        val gradColors = try {
-                            listOf(
-                                Color(android.graphics.Color.parseColor(currentSong.albumGradientStart)),
-                                Color(android.graphics.Color.parseColor(currentSong.albumGradientEnd))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "Synchronized Lyrics",
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
                             )
-                        } catch (e: Exception) {
-                            listOf(Color(0xFF813D53), Color(0xFFFFDADE))
+                            if (isFetchingLyrics) {
+                                Spacer(modifier = Modifier.width(8.dp))
+                                CircularProgressIndicator(color = Color(0xFFFFDADE), strokeWidth = 1.5.dp, modifier = Modifier.size(12.dp))
+                            }
                         }
+                        
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            IconButton(
+                                onClick = { onSyncLyrics(currentSong) },
+                                modifier = Modifier.size(26.dp)
+                            ) {
+                                Icon(Icons.Default.Sync, contentDescription = "Query LRCLIB", tint = Color(0xFFFFDADE), modifier = Modifier.size(18.dp))
+                            }
+                            IconButton(
+                                onClick = { showLyricsEditor = true },
+                                modifier = Modifier.size(26.dp)
+                            ) {
+                                Icon(Icons.Default.Edit, contentDescription = "Modify timed lyrics", tint = Color(0xFFFFDADE), modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+
+                    val rawLrc = currentSong.lyricsLrc ?: ""
+                    val lrcLines = remember(rawLrc) { parseLrc(rawLrc) }
+
+                    if (lrcLines.isEmpty()) {
                         Box(
                             modifier = Modifier
-                                .size(62.dp)
-                                .clip(CircleShape)
-                                .background(Brush.linearGradient(colors = gradColors))
-                                .padding(12.dp),
+                                .fillMaxWidth()
+                                .weight(1f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(Color.White.copy(alpha = 0.04f))
+                                .padding(16.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(16.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF141416))
-                                    .border(1.dp, Color.LightGray, CircleShape)
-                            )
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "No Timed Lyrics Added",
+                                    color = Color.White.copy(alpha = 0.4f),
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Spacer(modifier = Modifier.height(14.dp))
+                                Button(
+                                    onClick = { onSyncLyrics(currentSong) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f)),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Text("✨ Click here to fetch from LRCLIB", color = Color(0xFFFFDADE), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Button(
+                                    onClick = { showLyricsEditor = true },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f)),
+                                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Text("✍️ Paste or edit LRC", color = Color(0xFFFFDADE), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    } else {
+                        val activeLineIdx = lrcLines.indexOfLast { it.first <= progressMs }.coerceAtLeast(0)
+                        val listState = rememberLazyListState()
+
+                        LaunchedEffect(activeLineIdx) {
+                            if (lrcLines.isNotEmpty()) {
+                                listState.animateScrollToItem(activeLineIdx, scrollOffset = -80)
+                            }
+                        }
+
+                        LazyColumn(
+                            state = listState,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(16.dp),
+                            contentPadding = PaddingValues(vertical = 40.dp)
+                        ) {
+                            items(lrcLines.size) { idx ->
+                                val line = lrcLines[idx]
+                                val isActive = idx == activeLineIdx
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onSeekClick(line.first) }
+                                ) {
+                                    Text(
+                                        text = line.second,
+                                        color = if (isActive) Color(0xFFFFDADE) else Color.White.copy(alpha = 0.35f),
+                                        fontSize = if (isActive) 19.sp else 15.sp,
+                                        fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Normal,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            }
+            } else {
+                // 1. Rotating Vinyl container
+                Box(
+                    modifier = Modifier
+                        .size(230.dp)
+                        .clip(RoundedCornerShape(32.dp))
+                        .background(
+                            Brush.linearGradient(
+                                colors = listOf(Color(0xFF813D53), Color(0xFFFFDADE), Color(0xFFD0BCFF))
+                            )
+                        )
+                        .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(32.dp))
+                        .padding(14.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(22.dp))
+                            .background(Color.Black.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // rotating vinyl
+                        val currentRotation = if (isPlaying) rotationAngle else 0f
+                        Box(
+                            modifier = Modifier
+                                .size(175.dp)
+                                .rotate(currentRotation),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                val center = Offset(size.width / 2, size.height / 2)
+                                val radius = size.minDimension / 2
+                                // vinyl black records
+                                drawCircle(color = Color(0xFF141416), radius = radius)
+                                // grooves
+                                for (r in 3..14) {
+                                    drawCircle(
+                                        color = Color.White.copy(alpha = 0.04f),
+                                        radius = radius * (r / 15f),
+                                        style = Stroke(width = 1f)
+                                    )
+                                }
+                                // label
+                                drawCircle(color = Color(0xFF813D53), radius = radius * 0.4f)
+                            }
 
-            Spacer(modifier = Modifier.height(18.dp))
+                            // central gradient label cover
+                            val gradColors = try {
+                                listOf(
+                                    Color(android.graphics.Color.parseColor(currentSong.albumGradientStart)),
+                                    Color(android.graphics.Color.parseColor(currentSong.albumGradientEnd))
+                                )
+                            } catch (e: Exception) {
+                                listOf(Color(0xFF813D53), Color(0xFFFFDADE))
+                            }
+                            Box(
+                                modifier = Modifier
+                                    .size(62.dp)
+                                    .clip(CircleShape)
+                                    .background(Brush.linearGradient(colors = gradColors))
+                                    .padding(12.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(16.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF141416))
+                                        .border(1.dp, Color.LightGray, CircleShape)
+                                )
+                            }
+                        }
+                    }
+                }
 
-            // 2. Real-time Neon Equalizer/Visualizer
-            Canvas(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(38.dp)
-                    .padding(horizontal = 24.dp)
-            ) {
-                val barWidth = size.width / 16f
-                val gap = 6f
-                for (i in 0 until 16) {
-                    val coef = if (i < visualizerData.size) visualizerData[i] else 0.15f
-                    val barHeight = (size.height * coef).coerceAtLeast(4f)
-                    val startX = i * barWidth + gap / 2
-                    val startY = size.height - barHeight
-                    val w = barWidth - gap
-                    drawRoundRect(
-                        brush = Brush.verticalGradient(
-                            colors = listOf(Color(0xFFFFDADE), Color(0xFF813D53)),
-                            startY = startY,
-                            endY = size.height
-                        ),
-                        topLeft = Offset(startX, startY),
-                        size = Size(w, barHeight),
-                        cornerRadius = CornerRadius(w / 2, w / 2)
-                    )
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // 2. Real-time Neon Equalizer/Visualizer
+                Canvas(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(38.dp)
+                        .padding(horizontal = 24.dp)
+                ) {
+                    val barWidth = size.width / 16f
+                    val gap = 6f
+                    for (i in 0 until 16) {
+                        val coef = if (i < visualizerData.size) visualizerData[i] else 0.15f
+                        val barHeight = (size.height * coef).coerceAtLeast(4f)
+                        val startX = i * barWidth + gap / 2
+                        val startY = size.height - barHeight
+                        val w = barWidth - gap
+                        drawRoundRect(
+                            brush = Brush.verticalGradient(
+                                colors = listOf(Color(0xFFFFDADE), Color(0xFF813D53)),
+                                startY = startY,
+                                endY = size.height
+                            ),
+                            topLeft = Offset(startX, startY),
+                            size = Size(w, barHeight),
+                            cornerRadius = CornerRadius(w / 2, w / 2)
+                        )
+                    }
                 }
             }
 
@@ -1664,7 +2477,98 @@ fun NowPlayingSheet(
 
             Spacer(modifier = Modifier.height(24.dp))
         }
+
+        // --- LYRICS EDITOR DIALOG ---
+        if (showLyricsEditor) {
+            AlertDialog(
+                onDismissRequest = { showLyricsEditor = false },
+                containerColor = Color(0xFF2C2224),
+                shape = RoundedCornerShape(20.dp),
+                title = {
+                    Text(
+                        text = "Edit Sangeet LRC Lyrics",
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 16.sp
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "Paste standard timed lyrics format [mm:ss.xx] or raw lines.",
+                            fontSize = 11.sp,
+                            color = Color.White.copy(alpha = 0.6f)
+                        )
+                        OutlinedTextField(
+                            value = lyricsEditValue,
+                            onValueChange = { lyricsEditValue = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(200.dp),
+                            placeholder = { Text("[00:15.00] Let the Sangeet trail begin...", color = Color.White.copy(alpha = 0.3f)) },
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                focusedBorderColor = Color(0xFFFFDADE),
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.15f),
+                                focusedContainerColor = Color.Black.copy(alpha = 0.2f),
+                                unfocusedContainerColor = Color.Black.copy(alpha = 0.2f)
+                            )
+                        )
+                    }
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            onSaveLyrics(currentSong.id, lyricsEditValue)
+                            showLyricsEditor = false
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF813D53))
+                    ) {
+                        Text("Save Trails", color = Color.White)
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showLyricsEditor = false }) {
+                        Text("Cancel", color = Color.White.copy(alpha = 0.6f))
+                    }
+                }
+            )
+        }
     }
+}
+
+// Robust LRC parser that splits strings into List of timestamp (Ms) and lyric text
+fun parseLrc(raw: String?): List<Pair<Long, String>> {
+    if (raw.isNullOrBlank()) return emptyList()
+    val list = mutableListOf<Pair<Long, String>>()
+    val lines = raw.split("\n")
+    // Regex matching [mm:ss] or [mm:ss.xx] or [mm:ss:xx] or [mm:ss.xxx]
+    val regex = Regex("\\[(\\d+):(\\d+)(?:[.:](\\d+))?]\\s*(.*)")
+    for (line in lines) {
+        val trimmed = line.trim()
+        if (trimmed.isEmpty()) continue
+        val match = regex.matchEntire(trimmed)
+        if (match != null) {
+            try {
+                val min = match.groupValues[1].toLong()
+                val sec = match.groupValues[2].toLong()
+                val fractionStr = match.groupValues[3]
+                val text = match.groupValues[4]
+                
+                var millis = 0L
+                if (fractionStr.isNotEmpty()) {
+                    val pad = fractionStr.padEnd(3, '0').take(3)
+                    millis = pad.toLong()
+                }
+                val totalMs = (min * 60 + sec) * 1000 + millis
+                list.add(Pair(totalMs, text))
+            } catch (e: Exception) {
+                // Ignore parsing slip-ups gracefully
+            }
+        }
+    }
+    return list.sortedBy { it.first }
 }
 
 // Format duration from millis to MM:SS

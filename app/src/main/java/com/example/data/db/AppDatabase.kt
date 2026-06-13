@@ -10,7 +10,7 @@ import com.example.data.model.Song
 
 @Database(
     entities = [Song::class, Playlist::class, PlaylistSong::class],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {

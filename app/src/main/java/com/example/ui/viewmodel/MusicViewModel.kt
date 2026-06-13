@@ -28,6 +28,24 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     val playlists: StateFlow<List<Playlist>> = repository.allPlaylists
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    // Advanced Multi-Format and Folder Filters States
+    private val _ignoredFolders = MutableStateFlow<Set<String>>(emptySet())
+    val ignoredFolders: StateFlow<Set<String>> = _ignoredFolders
+
+    private val _activeDelimiters = MutableStateFlow(listOf(";", "&", "feat.", ","))
+    val activeDelimiters: StateFlow<List<String>> = _activeDelimiters
+
+    private val _isFetchingLyrics = MutableStateFlow(false)
+    val isFetchingLyrics: StateFlow<Boolean> = _isFetchingLyrics
+
+    // Master filter representing only songs inside allowed scanned directories
+    val visibleSongs: StateFlow<List<Song>> = allSongs.combine(_ignoredFolders) { songs, ignored ->
+        songs.filter { song ->
+            val folder = song.filePath.substringBeforeLast("/")
+            folder !in ignored && song.filePath !in ignored
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     // Player State Flows
     private val _currentSong = MutableStateFlow<Song?>(null)
     val currentSong: StateFlow<Song?> = _currentSong
@@ -164,7 +182,7 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
         return if (_activePlaylistId.value != null && songsInPlaylist.isNotEmpty()) {
             songsInPlaylist
         } else {
-            allSongs.value
+            visibleSongs.value
         }
     }
 
@@ -215,6 +233,102 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
             if (_isPlaying.value) {
                 // Instantly update running parameters
                 synthEngine.start(updated.synthStyle, updated.baseFrequency, updated.durationMs)
+            }
+        }
+    }
+
+    fun seekTo(progressMs: Long) {
+        synthEngine.seekTo(progressMs)
+    }
+
+    fun toggleFolderFilter(folder: String) {
+        val current = _ignoredFolders.value
+        _ignoredFolders.value = if (folder in current) {
+            current - folder
+        } else {
+            current + folder
+        }
+    }
+
+    fun toggleDelimiter(delim: String) {
+        val current = _activeDelimiters.value
+        _activeDelimiters.value = if (delim in current) {
+            current - delim
+        } else {
+            current + delim
+        }
+    }
+
+    fun saveLyrics(songId: String, text: String) {
+        viewModelScope.launch {
+            val song = allSongs.value.find { it.id == songId } ?: return@launch
+            val updated = song.copy(lyricsLrc = text)
+            repository.updateSong(updated)
+            if (_currentSong.value?.id == songId) {
+                _currentSong.value = updated
+            }
+        }
+    }
+
+    fun syncLyricsFromLrclib(song: Song) {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            _isFetchingLyrics.value = true
+            try {
+                // Split multi-artists using any active delimiter to pass clean primary painter tag to search
+                val activeDelims = _activeDelimiters.value
+                var firstArtist = song.artist
+                for (delim in activeDelims) {
+                    if (firstArtist.contains(delim)) {
+                        firstArtist = firstArtist.split(delim).first().trim()
+                    }
+                }
+                
+                val urlStr = "https://lrclib.net/api/get?artist_name=${java.net.URLEncoder.encode(firstArtist.trim(), "UTF-8")}&track_name=${java.net.URLEncoder.encode(song.title, "UTF-8")}"
+                val url = java.net.URL(urlStr)
+                val conn = url.openConnection() as java.net.HttpURLConnection
+                conn.requestMethod = "GET"
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                if (conn.responseCode == 200) {
+                    val responseText = conn.inputStream.bufferedReader().use { it.readText() }
+                    
+                    // Simple Regex extractor to avoid requiring heavy third-party JSON parser libraries
+                    val syncedRegex = """"[sS]yncedLyrics"\s*:\s*"([^"]+)"""".toRegex()
+                    val match = syncedRegex.find(responseText)
+                    var foundLyrics = match?.groupValues?.get(1)
+                    
+                    if (foundLyrics != null) {
+                        foundLyrics = foundLyrics
+                            .replace("\\n", "\n")
+                            .replace("\\r", "")
+                            .replace("\\\"", "\"")
+                            .replace("\\\\", "\\")
+                        saveLyrics(song.id, foundLyrics)
+                    } else {
+                        val plainRegex = """"[pP]lainLyrics"\s*:\s*"([^"]+)"""".toRegex()
+                        val plainMatch = plainRegex.find(responseText)
+                        var plainText = plainMatch?.groupValues?.get(1)
+                        if (plainText != null) {
+                            plainText = plainText
+                                .replace("\\n", "\n")
+                                .replace("\\r", "")
+                                .replace("\\\"", "\"")
+                                .replace("\\\\", "\\")
+                            // Synthesize times for plain lyrics
+                            val lines = plainText.split("\n")
+                            val timed = lines.mapIndexed { idx, line ->
+                                val min = idx * 6 / 60
+                                val sec = idx * 6 % 60
+                                String.format("[%02d:%02d.00] %s", min, sec, line.trim())
+                            }.joinToString("\n")
+                            saveLyrics(song.id, timed)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            } finally {
+                _isFetchingLyrics.value = false
             }
         }
     }
