@@ -123,23 +123,25 @@ fun MusicPlayerScreen(
     ) {
         // Soft peach and lavender glowing spots
         Canvas(modifier = Modifier.fillMaxSize()) {
+            val radius1 = (size.minDimension * 0.95f).coerceAtLeast(1f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(Color(0xFFFFDADE), Color.Transparent),
                     center = Offset(size.width * 0.15f, size.height * 0.18f),
-                    radius = size.minDimension * 0.95f
+                    radius = radius1
                 ),
                 center = Offset(size.width * 0.15f, size.height * 0.18f),
-                radius = size.minDimension * 0.95f
+                radius = radius1
             )
+            val radius2 = (size.minDimension * 0.95f).coerceAtLeast(1f)
             drawCircle(
                 brush = Brush.radialGradient(
                     colors = listOf(Color(0xFFE4E6FF), Color.Transparent),
                     center = Offset(size.width * 0.85f, size.height * 0.82f),
-                    radius = size.minDimension * 0.95f
+                    radius = radius2
                 ),
                 center = Offset(size.width * 0.85f, size.height * 0.82f),
-                radius = size.minDimension * 0.95f
+                radius = radius2
             )
         }
 
@@ -491,11 +493,13 @@ fun HomeYourMixSection(
             ) {
                 // Outer glowing blurred halos under central blob
                 Canvas(modifier = Modifier.size(240.dp)) {
+                    val rHome = (size.minDimension * 0.48f).coerceAtLeast(1f)
                     drawCircle(
                         brush = Brush.radialGradient(
-                            colors = listOf(Color(0xFFFFDFE3), Color.Transparent)
+                            colors = listOf(Color(0xFFFFDFE3), Color.Transparent),
+                            radius = rHome
                         ),
-                        radius = size.minDimension * 0.48f
+                        radius = rHome
                     )
                 }
 
@@ -1415,15 +1419,19 @@ fun NowPlayingSheet(
                         }
 
                         // central gradient label cover
-                        val gradColors = listOf(
-                            Color(android.graphics.Color.parseColor(currentSong.albumGradientStart)),
-                            Color(android.graphics.Color.parseColor(currentSong.albumGradientEnd))
-                        )
+                        val gradColors = try {
+                            listOf(
+                                Color(android.graphics.Color.parseColor(currentSong.albumGradientStart)),
+                                Color(android.graphics.Color.parseColor(currentSong.albumGradientEnd))
+                            )
+                        } catch (e: Exception) {
+                            listOf(Color(0xFF813D53), Color(0xFFFFDADE))
+                        }
                         Box(
                             modifier = Modifier
                                 .size(62.dp)
                                 .clip(CircleShape)
-                                .background(Brush.radialGradient(colors = gradColors))
+                                .background(Brush.linearGradient(colors = gradColors))
                                 .padding(12.dp),
                             contentAlignment = Alignment.Center
                         ) {
