@@ -1,6 +1,6 @@
 {
-  "name": "AURA Synth",
-  "description": "An elegant, offline-persistent music player and real-time audio synthesizer featuring high-fidelity sound, playlists, custom visualizers, and Material 3 design.",
+  "name": "Sangeet",
+  "description": "A beautiful, premium offline music player and real-time audio synthesizer featuring curated mixes, personal libraries, playlists, and a light pastel Material 3 design.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
