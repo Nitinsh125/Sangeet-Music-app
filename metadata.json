@@ -1,0 +1,6 @@
+{
+  "name": "AURA Synth",
+  "description": "An elegant, offline-persistent music player and real-time audio synthesizer featuring high-fidelity sound, playlists, custom visualizers, and Material 3 design.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
